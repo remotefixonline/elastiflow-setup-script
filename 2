@@ -1,0 +1,145 @@
+#this script is for centos 7 minimal install.  I have not tested it on any other version or distro
+#there are a few things this script does that are unwise such as disabling selinux and the firewall.  You should re-enable them after you have a working setup 
+#the only prerequisits to this is a machine with lots of (my test vm had 24GB, you might be able to get away with less) installing centos7 minimal install and enabling root to login via ssh.  again, not best practice, but when you do everything as root sudo is pointless, i've heard all the arguments, save it
+#you shouldn't be running this on a prod box anyway, if you are then sudo all you want.  I've tested it on KVM and hyper-v core guests, ymmv if you use something else.
+#you can copy and paste these into your ssh session  and it should do the rest. I plan on making it a real script at some point. Why not use docker? because this is funner..
+##---------------start copy below this line-------
+yum update -y
+yum install epel-release -y
+yum install wget git curl nload iotop vim nmap telnet net-tools tcpdump mlocate openssh -y
+systemctl start sshd 
+systemctl enable sshd
+updatedb &
+cd /etc/yum.repos.d/
+##grab the repo file (this is the oss version, if you want non-oss just remove -oss from the repo file once you download it)
+wget https://raw.githubusercontent.com/remotefixonline/elastiflow-setup-script/master/elasticsearch.repo
+yum clean all 
+rpm --import https://artifacts.elastic.co/GPG-KEY-elasticsearch
+yum install  filebeat metricbeat java-1.8.0-openjdk -y
+systemctl disable firewalld
+echo "SELINUX=disabled" > /etc/selinux/config
+echo "SELINUXTYPE=targeted" >> /etc/selinux/config
+reboot
+##-----------------end phase1 after reboot copy/paste the next section and grab a coffee cause it takes a while no matter how fast your vm is -------
+#check selinux is disabled (you can re-enable it when setup is complete if you are a masochist) it should return disabled
+getenforce
+## grab the rpm's and install them (this is the oss version if you want the non-oss version remove the -oss from the download and install commands)
+cd /home/
+wget https://artifacts.elastic.co/downloads/elasticsearch/elasticsearch-7.4.1-x86_64.rpm
+rpm --install elasticsearch-7.4.1-x86_64.rpm
+wget https://artifacts.elastic.co/downloads/kibana/kibana-7.4.1-x86_64.rpm
+rpm --install kibana-7.4.1-x86_64.rpm
+wget https://artifacts.elastic.co/downloads/logstash/logstash-7.4.1.rpm
+rpm --install logstash-7.4.1.rpm
+rpm --install kibana-7.4.1-x86_64.rpm
+##install and update all the logstash plugins
+ /usr/share/logstash/bin/system-install
+ /usr/share/logstash/bin/logstash-plugin install logstash-filter-dns
+ /usr/share/logstash/bin/logstash-plugin install logstash-codec-sflow 
+ /usr/share/logstash/bin/logstash-plugin install logstash-codec-netflow
+ /usr/share/logstash/bin/logstash-plugin install logstash-filter-dns 
+ /usr/share/logstash/bin/logstash-plugin install logstash-filter-geoip 
+ /usr/share/logstash/bin/logstash-plugin install logstash-filter-translate 
+ /usr/share/logstash/bin/logstash-plugin install logstash-filter-cidr 
+ /usr/share/logstash/bin/logstash-plugin install logstash-filter-date 
+ /usr/share/logstash/bin/logstash-plugin install logstash-filter-dns 
+ /usr/share/logstash/bin/logstash-plugin install logstash-filter-geoip 
+ /usr/share/logstash/bin/logstash-plugin install logstash-filter-mutate 
+ /usr/share/logstash/bin/logstash-plugin install logstash-filter-ruby 
+ /usr/share/logstash/bin/logstash-plugin install logstash-filter-translate 
+ /usr/share/logstash/bin/logstash-plugin install logstash-output-elasticsearch
+ /usr/share/logstash/bin/logstash-plugin update logstash-codec-sflow 
+ /usr/share/logstash/bin/logstash-plugin update logstash-codec-netflow 
+ /usr/share/logstash/bin/logstash-plugin update logstash-input-udp 
+ /usr/share/logstash/bin/logstash-plugin update logstash-input-tcp 
+ /usr/share/logstash/bin/logstash-plugin update logstash-filter-dns 
+ /usr/share/logstash/bin/logstash-plugin update logstash-filter-geoip 
+ /usr/share/logstash/bin/logstash-plugin update logstash-filter-translate 
+ /usr/share/logstash/bin/logstash-plugin update logstash-filter-cidr 
+ /usr/share/logstash/bin/logstash-plugin update logstash-filter-date 
+ /usr/share/logstash/bin/logstash-plugin update logstash-filter-dns 
+ /usr/share/logstash/bin/logstash-plugin update logstash-filter-geoip 
+ /usr/share/logstash/bin/logstash-plugin update logstash-filter-mutate 
+ /usr/share/logstash/bin/logstash-plugin update logstash-filter-ruby 
+ /usr/share/logstash/bin/logstash-plugin update logstash-filter-translate 
+ /usr/share/logstash/bin/logstash-plugin update logstash-output-elasticsearch
+
+## clone the elastiflow and setup script folders
+git clone https://github.com/remotefixonline/elastiflow.git
+git clone https://github.com/remotefixonline/elastiflow-setup-script.git
+##this changes some kernel parameters to allocate more memory to buffers 
+cp /home/elastiflow/sysctl.d/87-elastiflow.conf /etc/sysctl.d/ &
+ #-------------------------end phase2------------------------
+##unsets the cp -i alias so we dont' get prompted for overwriting files 
+unalias cp
+cp -f /home/elastiflow-setup-script/logstash.yml /etc/logstash/
+cp -f /home/elastiflow-setup-script/pipelines.yml /etc/logstash/
+cp -f /home/elastiflow-setup-script/jvm.options /etc/logstash/
+cp -f /home/elastiflow-setup-script/logstash.service /etc/systemd/system/ 
+echo "indices.query.bool.max_clause_count: 8192" >> /etc/elasticsearch/elasticsearch.yml
+echo "search.max_buckets: 100000" >> /etc/elasticsearch/elasticsearch.yml
+cp -f /home/elastiflow-setup-script/elasticsearch/jvm.options /etc/elasticsearch/
+
+systemctl daemon-reload
+systemctl start elasticsearch &
+##copy the whole folder to where its neeeded so logstash reads it all on startup
+cp -rf /home/elastiflow/logstash/* /etc/logstash/
+mkdir /etc/systemd/system/logstash.service.d
+cp -rf /home/elastiflow/logstash.service.d/elastiflow.conf /etc/systemd/system/logstash.service.d/elastiflow.conf
+systemctl daemon-reload
+systemctl start logstash &
+##check logs in /var/log/logstash/
+##this tells kibana to listen on the ip address of your vm
+## edit kibana.yml and enter the correct ip at server.host: "youripaddress"  don't forget to remove the # at the start of the line
+vi /etc/kibana/kibana.yml
+#you can use nano i wont' hold it against you...
+systemctl daemon-reload
+systemctl start kibana
+#check kibana is listening you should see port 5601 listening
+netstat -anlp | more
+##now you upload the json file to kibana via the web interface open ff/chrome and go to http://ipaddress:5601 then bottom icon on the left and then saved objects, then import, browse to the json files and upload them.
+
+## check listening ports
+netstat -anlp | more
+## you should see these 3 ports listening  2055 is for netflow  4739 is for ipfix  6343 is for sflow if you didn't disable the firewall open these ports up if you plan on enabling the firewall open these ports up
+udp        0      0 0.0.0.0:2055            0.0.0.0:*                           3268/java
+udp        0      0 0.0.0.0:4739            0.0.0.0:*                           3268/java
+udp        0      0 0.0.0.0:6343            0.0.0.0:*                           3268/java
+
+#at this point you should be good to tell your network gear to start sending flows to the above ports, I would do 1 device first and check it before doing the rest, there seems to be an issue with elastiflow if you send 
+#multiple flows to the same port, but the templates don't match (for instance if you send flows from a juniper and a mikrotik to the same port you will get errors instead of information)..
+#to check that you are getting flow data from your device run tcpdump (for instance if you are sending netflow to port 2055 run this)
+tcpdump -v port 2055
+#it should scroll a bunch and show you incoming flowdata... ctrl c will stop it
+#if everything so far is good set services to start automatically and reboot this biatch..
+systemctl enable elasticsearch logstash kibana &
+reboot
+
+##notes
+if you get an error like this
+Oct 26 02:43:21 localhost logstash: [2019-10-26T02:43:21,714][WARN ][logstash.outputs.elasticsearch] Attempted to resurrect connection to dead ES instance, but got an error. {:url=>"http://elastic:xxxxxx@12}
+
+clustername gosemo2019
+if docker permission erros do this
+ chown -R 1000:1000 /usr/share/elasticsearch/
+ 
+ # cat /etc/default/grub
+GRUB_TIMEOUT=5
+GRUB_DEFAULT=saved
+GRUB_DISABLE_SUBMENU=true
+GRUB_TERMINAL_OUTPUT="console"
+GRUB_CMDLINE_LINUX="ipv6.disable=1 crashkernel=auto rhgb quiet"
+GRUB_DISABLE_RECOVERY="true"
+##
+grub2-mkconfig -o /boot/grub2/grub.cfg
+
+##and/or
+echo "net.ipv6.conf.all.disable_ipv6 = 1" >> /etc/sysctl.conf
+echo "net.ipv6.conf.default.disable_ipv6 = 1" >> /etc/sysctl.conf 
+
+vi /etc/ssh/sshd_config
+AddressFamily inet
+cd /tmp
+wget http://www.nosuchhost.net/~cheese/fedora/packages/epel-7/x86_64//lldpd-0.9.8-1.el7.x86_64.rpm
+rpm --install lldpd-0.9.8-1.el7.x86_64.rpm
+
